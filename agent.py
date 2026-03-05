@@ -311,7 +311,7 @@ async def send_heartbeat(websocket):
     """定时发送心跳"""
     while True:
         try:
-            await asyncio.sleep(30)  # 每30秒发送一次心跳
+            await asyncio.sleep(120)  # 每2分钟发送一次心跳
             await websocket.send(json.dumps({
                 "type": "ping",
                 "agent_id": AGENT_ID,
@@ -333,8 +333,8 @@ async def agent_loop():
         try:
             async with websockets.connect(
                 SERVER_URL,
-                ping_interval=30,  # 每30秒发送 WebSocket ping
-                ping_timeout=10,   # 10秒没收到 pong 则断开
+                ping_interval=120,  # 2分钟发送一次 WebSocket ping
+                ping_timeout=60,    # 60秒没收到 pong 则断开
                 close_timeout=None
             ) as websocket:
                 print("[Agent] Connected to server")
