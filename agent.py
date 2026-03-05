@@ -307,6 +307,21 @@ def terminate_execution(execution_id):
     return False
 
 
+async def send_heartbeat(websocket):
+    """定时发送心跳"""
+    while True:
+        try:
+            await asyncio.sleep(30)  # 每30秒发送一次心跳
+            await websocket.send(json.dumps({
+                "type": "ping",
+                "agent_id": AGENT_ID,
+                "timestamp": datetime.now().isoformat()
+            }))
+        except Exception as e:
+            print(f"[Agent] Heartbeat error: {e}")
+            break
+
+
 async def agent_loop():
     """Agent 主循环"""
     agent_info = get_agent_info()
@@ -318,8 +333,8 @@ async def agent_loop():
         try:
             async with websockets.connect(
                 SERVER_URL,
-                ping_interval=None,
-                ping_timeout=None,
+                ping_interval=30,  # 每30秒发送 WebSocket ping
+                ping_timeout=10,   # 10秒没收到 pong 则断开
                 close_timeout=None
             ) as websocket:
                 print("[Agent] Connected to server")
@@ -329,62 +344,66 @@ async def agent_loop():
                     "agent": agent_info
                 }))
                 
+                # 启动心跳任务
+                heartbeat_task = asyncio.create_task(send_heartbeat(websocket))
+                
                 running_tasks = set()
                 
-                async for message in websocket:
-                    try:
-                        data = json.loads(message)
-                        msg_type = data.get("type")
-                        
-                        if msg_type == "execute":
-                            cmd = data.get("cmd")
-                            timeout = data.get("timeout", 300)
-                            task_id = data.get("task_id")
-                            execution_id = data.get("execution_id")
+                try:
+                    async for message in websocket:
+                        try:
+                            data = json.loads(message)
+                            msg_type = data.get("type")
                             
-                            print(f"[Agent] Executing command: {cmd}")
-                            
-                            task = asyncio.create_task(
-                                execute_command_async(cmd, timeout, websocket, task_id, execution_id)
-                            )
-                            running_tasks.add(task)
-                            task.add_done_callback(running_tasks.discard)
-                            
-                        elif msg_type == "terminate":
-                            execution_id = data.get("execution_id")
-                            print(f"[Agent] Received terminate command for: {execution_id}")
-                            
-                            success = terminate_execution(execution_id)
-                            
-                            try:
+                            if msg_type == "execute":
+                                cmd = data.get("cmd")
+                                timeout = data.get("timeout", 300)
+                                task_id = data.get("task_id")
+                                execution_id = data.get("execution_id")
+                                
+                                print(f"[Agent] Executing command: {cmd}")
+                                
+                                task = asyncio.create_task(
+                                    execute_command_async(cmd, timeout, websocket, task_id, execution_id)
+                                )
+                                running_tasks.add(task)
+                                task.add_done_callback(running_tasks.discard)
+                                
+                            elif msg_type == "terminate":
+                                execution_id = data.get("execution_id")
+                                print(f"[Agent] Received terminate command for: {execution_id}")
+                                
+                                success = terminate_execution(execution_id)
+                                
+                                try:
+                                    await websocket.send(json.dumps({
+                                        "type": "terminate_ack",
+                                        "agent_id": AGENT_ID,
+                                        "execution_id": execution_id,
+                                        "success": success
+                                    }))
+                                except Exception as e:
+                                    print(f"[Agent] Failed to send terminate_ack: {e}")
+                                
+                            elif msg_type == "pong":
+                                # 收到心跳响应
+                                pass
+                                
+                            elif msg_type == "shutdown":
+                                print("[Agent] Received shutdown command")
                                 await websocket.send(json.dumps({
-                                    "type": "terminate_ack",
-                                    "agent_id": AGENT_ID,
-                                    "execution_id": execution_id,
-                                    "success": success
+                                    "type": "shutdown_ack",
+                                    "agent_id": AGENT_ID
                                 }))
-                            except Exception as e:
-                                print(f"[Agent] Failed to send terminate_ack: {e}")
-                            
-                        elif msg_type == "ping":
-                            await websocket.send(json.dumps({
-                                "type": "pong",
-                                "agent_id": AGENT_ID,
-                                "timestamp": datetime.now().isoformat()
-                            }))
-                            
-                        elif msg_type == "shutdown":
-                            print("[Agent] Received shutdown command")
-                            await websocket.send(json.dumps({
-                                "type": "shutdown_ack",
-                                "agent_id": AGENT_ID
-                            }))
-                            return
-                            
-                    except json.JSONDecodeError:
-                        print(f"[Agent] Invalid message: {message}")
-                    except Exception as e:
-                        print(f"[Agent] Error processing message: {e}")
+                                heartbeat_task.cancel()
+                                return
+                                
+                        except json.JSONDecodeError:
+                            print(f"[Agent] Invalid message: {message}")
+                        except Exception as e:
+                            print(f"[Agent] Error processing message: {e}")
+                finally:
+                    heartbeat_task.cancel()
                         
         except websockets.exceptions.ConnectionClosed:
             print(f"[Agent] Connection closed, reconnecting in {RECONNECT_INTERVAL} seconds...")
