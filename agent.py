@@ -263,14 +263,127 @@ def execute_command_sync(cmd, timeout, execution_id):
 async def execute_command_async(cmd, timeout, websocket, task_id, execution_id):
     """异步执行命令"""
     loop = asyncio.get_event_loop()
+    start_time = datetime.now()
     
-    result = await loop.run_in_executor(
-        None, 
-        execute_command_sync, 
-        cmd, 
-        timeout, 
-        execution_id
+    global running_processes
+    
+    work_dir = None
+    import re
+    python_match = re.search(r'(?:python|python\.exe)\s+["\']?([^\s"\']+\.py)["\']?', cmd, re.IGNORECASE)
+    if python_match:
+        script_path = python_match.group(1).strip('"\'')
+        if os.path.exists(script_path):
+            work_dir = os.path.dirname(os.path.abspath(script_path))
+    
+    clean_env = os.environ.copy()
+    clean_env['PYTHONUNBUFFERED'] = '1'
+    clean_env['PYTHONIOENCODING'] = 'utf-8'
+    
+    if re.search(r'python\.exe["\']?\s+', cmd, re.IGNORECASE) and '-u' not in cmd:
+        cmd = re.sub(r'(python\.exe["\']?)\s+', r'\1 -u ', cmd, count=1, flags=re.IGNORECASE)
+    elif re.search(r'python["\']?\s+', cmd, re.IGNORECASE) and '.exe' not in cmd.lower().split()[0] and '-u' not in cmd:
+        cmd = re.sub(r'(python["\']?)\s+', r'\1 -u ', cmd, count=1, flags=re.IGNORECASE)
+    
+    process = subprocess.Popen(
+        cmd,
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding='utf-8',
+        errors='replace',
+        cwd=work_dir,
+        env=clean_env,
+        bufsize=0,
+        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == 'win32' else 0
     )
+    
+    stdout_capture = StreamOutput(process.stdout)
+    stderr_capture = StreamOutput(process.stderr)
+    
+    lock = threading.Lock()
+    running_processes[execution_id] = {
+        "process": process,
+        "terminated": False,
+        "lock": lock,
+        "stdout_capture": stdout_capture,
+        "stderr_capture": stderr_capture
+    }
+    
+    was_terminated = False
+    last_output_time = time.time()
+    last_stdout = ""
+    last_stderr = ""
+    
+    while True:
+        returncode = process.poll()
+        if returncode is not None:
+            break
+        
+        with lock:
+            if running_processes.get(execution_id, {}).get("terminated"):
+                was_terminated = True
+                break
+        
+        if time.time() - start_time.timestamp() > timeout:
+            was_terminated = True
+            break
+        
+        current_stdout = stdout_capture.get_output()
+        current_stderr = stderr_capture.get_output()
+        
+        if time.time() - last_output_time >= 10:
+            if current_stdout != last_stdout or current_stderr != last_stderr:
+                try:
+                    await websocket.send(json.dumps({
+                        "type": "execution_output",
+                        "agent_id": AGENT_ID,
+                        "task_id": task_id,
+                        "execution_id": execution_id,
+                        "output": {
+                            "stdout": current_stdout,
+                            "stderr": current_stderr,
+                            "status": "running"
+                        }
+                    }))
+                    last_stdout = current_stdout
+                    last_stderr = current_stderr
+                except Exception as e:
+                    print(f"[Agent] Failed to send output: {e}")
+            last_output_time = time.time()
+        
+        await asyncio.sleep(0.5)
+    
+    if process.poll() is None:
+        kill_process_tree(process.pid)
+        try:
+            process.wait(timeout=5)
+        except:
+            pass
+    
+    stdout_capture.wait(timeout=1)
+    stderr_capture.wait(timeout=1)
+    
+    stdout = stdout_capture.get_output()
+    stderr = stderr_capture.get_output()
+    
+    returncode = process.returncode if process.returncode is not None else -1
+    
+    if execution_id in running_processes:
+        del running_processes[execution_id]
+    
+    end_time = datetime.now()
+    duration = (end_time - start_time).total_seconds()
+    
+    result = {
+        "status": "terminated" if was_terminated else ("success" if returncode == 0 else "error"),
+        "returncode": returncode,
+        "stdout": stdout,
+        "stderr": stderr,
+        "execution_time": end_time.isoformat(),
+        "duration": format_duration(duration),
+        "work_dir": work_dir
+    }
     
     try:
         await websocket.send(json.dumps({
