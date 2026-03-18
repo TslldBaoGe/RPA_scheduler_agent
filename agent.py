@@ -354,11 +354,6 @@ async def execute_command_async(cmd, timeout, websocket, task_id, execution_id):
         
         await asyncio.sleep(0.5)
     
-    # 进程退出后，再次检查是否被终止
-    with lock:
-        if running_processes.get(execution_id, {}).get("terminated"):
-            was_terminated = True
-    
     if process.poll() is None:
         kill_process_tree(process.pid)
         try:
