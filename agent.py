@@ -51,7 +51,8 @@ def get_agent_info():
         "agent_name": AGENT_NAME,
         "hostname": os.environ.get("COMPUTERNAME", "Unknown"),
         "platform": sys.platform,
-        "pid": os.getpid()
+        "pid": os.getpid(),
+        "python_path": sys.executable
     }
 
 
