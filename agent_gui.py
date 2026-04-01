@@ -20,7 +20,7 @@ from tkinter import ttk, scrolledtext, messagebox
 from tkinter import font as tkfont
 
 # 配置
-SERVER_URL = "ws://rpa.tslldtslldtslld.top/ws/agent"
+SERVER_URL = "ws://rpaconsole.dehannet.com/ws/agent"
 AGENT_ID = None
 AGENT_NAME = None
 RECONNECT_INTERVAL = 5
