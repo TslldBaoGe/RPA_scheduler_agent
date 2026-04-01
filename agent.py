@@ -16,7 +16,7 @@ import time
 from datetime import datetime
 
 # 配置
-SERVER_URL = "ws://120.79.224.20/ws/agent"
+SERVER_URL = "ws://rpa.tslldtslldtslld.top/ws/agent"
 AGENT_ID = None
 AGENT_NAME = None
 RECONNECT_INTERVAL = 5
